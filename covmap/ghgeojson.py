@@ -12,14 +12,14 @@ crc8 = crcmod.predefined.mkPredefinedCrcFun('crc-8')
 
 
 def feature(data_point):
-    data_point_id = (
-        data_point['time'] + data_point['gateway_eui']).encode(API_ENCODING)
+    data_point_id = (data_point['gateway_time'] +
+                     data_point['gateway_eui']).encode(API_ENCODING)
     data_point_hash = hashlib.sha1(data_point_id).hexdigest()
 
     point = geojson.Point((data_point['lat_lon'][1], data_point['lat_lon'][0]))
     props = dict(hash=data_point_hash, gateway_eui=data_point['gateway_eui'],
-                 time=data_point['time'], rssi=data_point['rssi'],
-                 snr=data_point['snr'], data_rate=data_point['data_rate'])
+                 time=data_point['gateway_time'], rssi=data_point['rssi'],
+                 snr=data_point['lsnr'], datarate=data_point['datarate'])
 
     # Add styling features
     # https://help.github.com/articles/mapping-geojson-files-on-github/

@@ -18,17 +18,21 @@ import ghgeojson
 
 logger = logging.getLogger(__name__)
 
+QOS = 1
+
 
 def on_connect(client, userdata, flags, rc):
     logger.info("Connected: %d", rc)
-    client.subscribe('nodes/%s/packets' % userdata['neui'], 0)
+
+    client.subscribe('%s/devices/%s/up' % (userdata['app_eui'],
+                                           userdata['node_eui']), QOS)
 
 
 def on_message(client, userdata, msg):
     logger.debug("msg arrives: %r", msg)
     dp = json.loads(msg.payload)
     gist_push(dp, userdata['map'], userdata['gist'],
-              userdata['gistid'], userdata['geui'])
+              userdata['gistid'], userdata['app_eui'])
 
 
 def on_subscribe(client, userdata, mid, granted_qos):
@@ -45,27 +49,24 @@ def camel2underscore(name):
     return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
 
 
-def gist_push(dp, map_, gist, gistid, geui):
+def gist_push(dp, map_, gist, gistid, app_eui):
     dp_ = {}
     for k, v in dp.iteritems():
         if k == 'datarate':  # fix naming discrepancy
             dp_['dataRate'] = v
-
         dp_[camel2underscore(k)] = v
 
     logger.debug("dp: %r", dp)
 
-    if not geui or dp_['gateway_eui'] in geui:
-        d = arf8084.decode(base64.b64decode(dp_['data']))
-        logger.debug("decoded %s", d)
-        if 'lat_lon' not in d:
-            logger.info("gps data doesn't exist in %r", dp_['data'])
-            return
+    d = arf8084.decode(base64.b64decode(dp_['payload']))
+    logger.debug("decoded %s", d)
+    if 'lat_lon' not in d:
+        logger.info("gps data doesn't exist in %r", dp_['payload'])
+        return
 
-        dp_.update(d)
-
-        f = ghgeojson.feature(dp_)
-
+    for md in dp_['metadata']:
+        md.update(d)
+        f = ghgeojson.feature(md)
         feature_hashes = set([x['properties']['hash']
                               for x in map_['features']])
 
@@ -81,12 +82,12 @@ def gist_push(dp, map_, gist, gistid, geui):
 
 def fileimport(map_, gist, gistid, args):
     for f in json.loads(open(args.file, 'r').read()):
-        gist_push(f, map_, gist, gistid, args.geui)
+        gist_push(f, map_, gist, gistid, args.app_eui)
 
 
 def mqttdaemon(map_, gist, gistid, args):
-    client = mqtt.Client(userdata={'neui': args.neui,
-                                   'geui': sorted(args.geui),
+    client = mqtt.Client(userdata={'node_eui': args.node_eui,
+                                   'app_eui': args.app_eui,
                                    'gist': gist,
                                    'gistid': gistid,
                                    'map': map_})
@@ -95,6 +96,7 @@ def mqttdaemon(map_, gist, gistid, args):
     client.on_subscribe = on_subscribe
     client.on_log = on_log
 
+    client.username_pw_set(args.broker_username, args.broker_password)
     client.connect(args.broker_host, args.broker_port, args.broker_keepalive)
     client.loop_forever()
 
@@ -103,9 +105,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('-v', '--verbose', action='count')
 
-    parser.add_argument('--neui', required=True, help='node eui of gps')
-    parser.add_argument('--geui', action='append', default=[],
-                        help='enable gateway eui filtering, multiple allowed')
+    parser.add_argument('--node-eui', default='+', help='node eui of gps')
+    parser.add_argument('--app-eui', required=True, help='app eui')
     parser.add_argument('--gist-secret', default=False, action='store_true',
                         help='make secret gists')
     parser.add_argument('--gist-suffix',
@@ -122,6 +123,8 @@ def parse_args():
                        metavar='HOST')
     mqttp.add_argument('--broker-port', help='mqtt broker tcp port',
                        default=1883, metavar='PORT')
+    mqttp.add_argument('--broker-username', help='mqtt broker username')
+    mqttp.add_argument('--broker-password', help='mqtt broker password')
     mqttp.add_argument('--broker-keepalive', default=60,
                        help='mqtt broker keep alive check interval in sec')
     mqttp.set_defaults(func=mqttdaemon)
@@ -145,11 +148,10 @@ def main():
 
     logging.basicConfig(level=loglevel)
 
-    geui = sorted(args.geui)
     nparts = ['coverage']
-    if geui:
-        nparts.append('_'.join(geui))
-    nparts.append(args.neui)
+    if args.app_eui:
+        nparts.append(args.app_eui)
+    nparts.append(args.node_eui)
     if args.gist_suffix is not None:
         nparts.append(args.gist_suffix)
     gist_filename = '-'.join(nparts) + '.geojson'
